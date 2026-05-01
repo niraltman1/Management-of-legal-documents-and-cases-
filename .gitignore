@@ -1,0 +1,22 @@
+# Generated outputs — never commit these
+_Reports/
+_Quarantine/
+*.db
+*.db-shm
+*.db-wal
+Catalog_*.csv
+Duplicates_*.csv
+Suggestions_*.csv
+RenameSuggestions_*.csv
+RenameLog.csv
+Manifest_*.json
+Report_*.html
+*.log
+
+# Temp OCR files
+Scripts/lib/deps/ocr-temp/
+
+# Windows
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/

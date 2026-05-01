@@ -178,6 +178,28 @@ CREATE TABLE IF NOT EXISTS DryRunSnapshot (
     ActionType        TEXT
 );
 
+-- Task lists: per-case follow-up actions, deadlines, and checklist items
+-- Compatible with GitHub task list format: [ ] pending, [x] done
+CREATE TABLE IF NOT EXISTS Tasks (
+    TaskID            INTEGER PRIMARY KEY AUTOINCREMENT,
+    CaseID            INTEGER REFERENCES Cases(CaseID),
+    ClientID          INTEGER REFERENCES Clients(ClientID),
+    Title             TEXT NOT NULL,
+    Description       TEXT,
+    Category          TEXT DEFAULT 'general',
+    -- Category values: deadline | filing | hearing | payment | correspondence | general
+    IsChecked         INTEGER DEFAULT 0,   -- 0 = [ ]  1 = [x]
+    DueDate           TEXT,                -- ISO 8601 YYYY-MM-DD
+    Priority          TEXT DEFAULT 'normal', -- high | normal | low
+    CreatedDate       TEXT DEFAULT (date('now')),
+    CompletedDate     TEXT,
+    SourceFileID      INTEGER REFERENCES Files(FileID)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_case     ON Tasks(CaseID);
+CREATE INDEX IF NOT EXISTS idx_tasks_due      ON Tasks(DueDate);
+CREATE INDEX IF NOT EXISTS idx_tasks_checked  ON Tasks(IsChecked);
+
 CREATE INDEX IF NOT EXISTS idx_files_md5       ON Files(MD5Hash);
 CREATE INDEX IF NOT EXISTS idx_files_status    ON Files(ProcessingStatus);
 CREATE INDEX IF NOT EXISTS idx_files_domain    ON Files(Domain);
@@ -303,4 +325,52 @@ WHERE fts.ExtractedText MATCH @q
 ORDER BY rank;
 "@
     return Invoke-SqliteQuery -DataSource $DbPath -Query $q -SqlParameters @{q=$Query}
+}
+
+function Upsert-Task {
+    param([string]$DbPath, [hashtable]$Row)
+    $q = @"
+INSERT INTO Tasks (CaseID, ClientID, Title, Description, Category, IsChecked, DueDate, Priority, CreatedDate, CompletedDate, SourceFileID)
+VALUES (@CaseID, @ClientID, @Title, @Description, @Category, @IsChecked, @DueDate, @Priority, @CreatedDate, @CompletedDate, @SourceFileID)
+ON CONFLICT DO NOTHING;
+"@
+    Invoke-SqliteQuery -DataSource $DbPath -Query $q -SqlParameters $Row
+}
+
+function Set-TaskChecked {
+    param([string]$DbPath, [int]$TaskID, [int]$IsChecked)
+    $completed = if ($IsChecked -eq 1) { "date('now')" } else { "NULL" }
+    Invoke-SqliteQuery -DataSource $DbPath `
+        -Query "UPDATE Tasks SET IsChecked=@c, CompletedDate=(CASE WHEN @c=1 THEN date('now') ELSE NULL END) WHERE TaskID=@id" `
+        -SqlParameters @{c=$IsChecked; id=$TaskID}
+}
+
+function Get-TaskList {
+    param([string]$DbPath, [int]$CaseID = 0, [int]$ClientID = 0, [switch]$PendingOnly)
+    $where = if ($CaseID -gt 0) { "WHERE t.CaseID=$CaseID" }
+             elseif ($ClientID -gt 0) { "WHERE t.ClientID=$ClientID" }
+             else { "WHERE 1=1" }
+    if ($PendingOnly) { $where += " AND t.IsChecked=0" }
+    $q = @"
+SELECT t.TaskID, t.CaseID, t.ClientID, t.Title, t.Description, t.Category,
+       t.IsChecked, t.DueDate, t.Priority, t.CreatedDate, t.CompletedDate,
+       c.CaseNumber, cl.LastName || ' ' || cl.FirstName AS ClientName
+FROM Tasks t
+LEFT JOIN Cases c ON c.CaseID = t.CaseID
+LEFT JOIN Clients cl ON cl.ClientID = t.ClientID
+$where
+ORDER BY t.IsChecked ASC, t.Priority DESC, t.DueDate ASC;
+"@
+    return Invoke-SqliteQuery -DataSource $DbPath -Query $q
+}
+
+function Format-TaskMarkdown {
+    param([object[]]$Tasks)
+    $lines = foreach ($t in $Tasks) {
+        $check = if ($t.IsChecked -eq 1) { '[x]' } else { '[ ]' }
+        $due   = if ($t.DueDate)   { " — עד $($t.DueDate)" } else { '' }
+        $pri   = if ($t.Priority -eq 'high') { ' ⚑' } elseif ($t.Priority -eq 'low') { ' ↓' } else { '' }
+        "- $check $($t.Title)$due$pri"
+    }
+    return $lines -join "`n"
 }

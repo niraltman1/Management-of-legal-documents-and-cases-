@@ -2,7 +2,7 @@
 <#
 .SYNOPSIS
     STEP 7 — Generates the self-contained HTML report.
-    Tabs: Summary | Clients | Cases | Action Plan | Duplicates | Unresolved | Search
+    Tabs: Summary | Clients | Cases | Tasks | Action Plan | Duplicates | Unresolved | Search
     No external dependencies — all CSS/JS is inlined.
     Opens the report in the default browser when done.
 #>
@@ -93,6 +93,16 @@ WHERE fc.OcrConfidence < 50 AND fc.ExtractedText IS NOT NULL AND fc.ExtractedTex
 ORDER BY fc.OcrConfidence ASC;
 "@
 
+$tasks = Invoke-SqliteQuery -DataSource $script:DbPath -Query @"
+SELECT t.TaskID, t.CaseID, t.ClientID, t.Title, t.Description, t.Category,
+       t.IsChecked, t.DueDate, t.Priority, t.CreatedDate, t.CompletedDate,
+       c.CaseNumber, cl.LastName || ' ' || cl.FirstName AS ClientName
+FROM Tasks t
+LEFT JOIN Cases c ON c.CaseID = t.CaseID
+LEFT JOIN Clients cl ON cl.ClientID = COALESCE(t.ClientID, c.ClientID)
+ORDER BY t.IsChecked ASC, t.Priority DESC, t.DueDate ASC;
+"@
+
 # ── Build HTML ─────────────────────────────────────────────────────────────────
 
 $totalMB = [math]::Round($summary.TotalMB, 1)
@@ -104,6 +114,9 @@ $casesJson      = $cases      | ConvertTo-Json -Compress
 $planJson       = $plan       | ConvertTo-Json -Compress
 $duplicatesJson = $duplicates | ConvertTo-Json -Compress
 $unresolvedJson = $unresolved | ConvertTo-Json -Compress
+$tasksJson      = $tasks      | ConvertTo-Json -Compress
+$taskCount      = if ($tasks) { @($tasks).Count } else { 0 }
+$pendingTasks   = if ($tasks) { @($tasks | Where-Object { $_.IsChecked -eq 0 }).Count } else { 0 }
 
 $domainData = @"
 [$($summary.LegalCase),$($summary.LegalResearch),$($summary.Medical),$($summary.Teaching),$($summary.Personal),$($summary.Unknown)]
@@ -158,6 +171,26 @@ input[type=text]{padding:7px 12px;border:1px solid #ccc;border-radius:4px;
   width:100%;margin-bottom:12px;font-size:.9rem}
 .path{font-family:monospace;font-size:.78rem;color:#555;word-break:break-all}
 canvas{max-width:400px;margin:0 auto;display:block}
+.task-list{background:#fff;border-radius:8px;padding:16px;box-shadow:0 1px 4px rgba(0,0,0,.1);margin-bottom:16px}
+.task-list h3{font-size:.95rem;color:#1a3a5c;margin-bottom:10px;border-bottom:1px solid #eee;padding-bottom:6px}
+.task-item{display:flex;align-items:flex-start;gap:10px;padding:6px 0;border-bottom:1px solid #f5f5f5}
+.task-item:last-child{border-bottom:none}
+.task-item input[type=checkbox]{width:16px;height:16px;cursor:pointer;flex-shrink:0;margin-top:2px;accent-color:#1a3a5c}
+.task-item .task-title{flex:1;font-size:.88rem}
+.task-item .task-title.done{text-decoration:line-through;color:#aaa}
+.task-meta{font-size:.75rem;color:#888;margin-top:2px}
+.task-due{font-size:.75rem}
+.task-due.overdue{color:#c0392b;font-weight:bold}
+.task-due.soon{color:#e67e22}
+.task-due.ok{color:#27ae60}
+.pri-high::before{content:'⚑ ';color:#c0392b}
+.pri-low::before{content:'↓ ';color:#888}
+.task-progress{background:#eee;border-radius:4px;height:6px;margin-bottom:12px}
+.task-progress-bar{background:#1a3a5c;border-radius:4px;height:6px;transition:width .3s}
+.task-filter-row{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+.task-filter-row button{padding:5px 12px;border:1px solid #ccc;border-radius:16px;
+  background:#fff;cursor:pointer;font-size:.8rem}
+.task-filter-row button.active{background:#1a3a5c;color:#fff;border-color:#1a3a5c}
 </style>
 </head>
 <body>
@@ -170,6 +203,7 @@ canvas{max-width:400px;margin:0 auto;display:block}
   <button class="active" onclick="show('summary')">סיכום</button>
   <button onclick="show('clients')">לקוחות ($($clients.Count))</button>
   <button onclick="show('cases')">תיקים ($($cases.Count))</button>
+  <button onclick="show('tasks')">משימות ($pendingTasks פתוחות)</button>
   <button onclick="show('plan')">תוכנית פעולה ($($plan.Count))</button>
   <button onclick="show('dups')">כפולים ($dupCount קבוצות)</button>
   <button onclick="show('unresolved')">לא פוענח ($($unresolved.Count))</button>
@@ -201,6 +235,19 @@ canvas{max-width:400px;margin:0 auto;display:block}
     <thead><tr><th>מספר תיק</th><th>לקוח</th><th>סוג</th><th>סטטוס</th><th>קבצים</th><th>חומר חקירה</th></tr></thead>
     <tbody id="casesTbody"></tbody>
   </table>
+</div>
+
+<!-- TASKS TAB -->
+<div id="tab-tasks" class="tab">
+  <div class="task-filter-row">
+    <button class="active" onclick="filterTasks('all',this)">הכל</button>
+    <button onclick="filterTasks('pending',this)">פתוחות בלבד</button>
+    <button onclick="filterTasks('done',this)">הושלמו</button>
+    <button onclick="filterTasks('high',this)">עדיפות גבוהה</button>
+    <button onclick="filterTasks('overdue',this)">באיחור</button>
+  </div>
+  <input type="text" id="taskSearch" onkeyup="renderTasks()" placeholder="חפש משימה, תיק, לקוח...">
+  <div id="tasksList"></div>
 </div>
 
 <!-- ACTION PLAN TAB -->
@@ -244,6 +291,7 @@ const cases      = $casesJson;
 const plan       = $planJson;
 const dups       = $duplicatesJson;
 const unresolved = $unresolvedJson;
+const tasksData  = $tasksJson;
 
 function show(tab){
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
@@ -352,7 +400,87 @@ function filterTable(tableId, q){
   });
 }
 
-// Domain pie chart (Chart.js via CDN)
+// ── Tasks ─────────────────────────────────────────────────────────────────────
+const tasksArr = Array.isArray(tasksData) ? tasksData : (tasksData ? [tasksData] : []);
+let taskFilter = 'all';
+const today = new Date().toISOString().slice(0,10);
+
+function dueCls(due){
+  if(!due) return '';
+  if(due < today) return 'overdue';
+  const d = new Date(due), t = new Date(today);
+  return (d - t) <= 7*86400000 ? 'soon' : 'ok';
+}
+
+function filterTasks(f, btn){
+  taskFilter = f;
+  document.querySelectorAll('.task-filter-row button').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  renderTasks();
+}
+
+function renderTasks(){
+  const q = (document.getElementById('taskSearch').value||'').toLowerCase();
+  let arr = tasksArr.filter(t=>{
+    const text = [t.Title, t.Description, t.CaseNumber, t.ClientName, t.Category].join(' ').toLowerCase();
+    if(q && !text.includes(q)) return false;
+    if(taskFilter==='pending' && t.IsChecked) return false;
+    if(taskFilter==='done'    && !t.IsChecked) return false;
+    if(taskFilter==='high'    && t.Priority!=='high') return false;
+    if(taskFilter==='overdue' && (!t.DueDate || t.DueDate >= today)) return false;
+    return true;
+  });
+
+  // Group by CaseNumber (or ClientName if no case)
+  const groups = {};
+  arr.forEach(t=>{
+    const key = t.CaseNumber || (t.ClientName ? 'לקוח: '+t.ClientName : 'ללא שיוך');
+    if(!groups[key]) groups[key] = [];
+    groups[key].push(t);
+  });
+
+  const el = document.getElementById('tasksList');
+  if(!arr.length){ el.innerHTML='<p style="color:#888;padding:20px">אין משימות מתאימות לפילטר שנבחר.</p>'; return; }
+
+  el.innerHTML = Object.entries(groups).map(([grpName, items])=>{
+    const total = items.length;
+    const done  = items.filter(i=>i.IsChecked).length;
+    const pct   = total ? Math.round(done/total*100) : 0;
+    const rows  = items.map(t=>{
+      const dCls = dueCls(t.DueDate);
+      const priCls = t.Priority==='high'?'pri-high':t.Priority==='low'?'pri-low':'';
+      const dueLabel = t.DueDate ? `<span class="task-due ${dCls}">${dCls==='overdue'?'⚠ באיחור — ':dCls==='soon'?'⏰ בקרוב — ':'עד '}${t.DueDate}</span>` : '';
+      const catLabel = t.Category && t.Category!=='general' ? `<span style="color:#555"> [${esc(t.Category)}]</span>` : '';
+      return `<div class="task-item" data-id="${t.TaskID}">
+        <input type="checkbox" ${t.IsChecked?'checked':''} onchange="toggleTask(${t.TaskID},this)">
+        <div style="flex:1">
+          <div class="task-title ${t.IsChecked?'done':''} ${priCls}">${esc(t.Title)}</div>
+          <div class="task-meta">${dueLabel}${catLabel}${t.Description?'<br><small>'+esc(t.Description.substring(0,100))+'</small>':''}</div>
+        </div>
+      </div>`;
+    }).join('');
+
+    return `<div class="task-list">
+      <h3>${esc(grpName)} <span style="font-weight:normal;font-size:.8rem;color:#888">${done}/${total} הושלמו</span></h3>
+      <div class="task-progress"><div class="task-progress-bar" style="width:${pct}%"></div></div>
+      ${rows}
+    </div>`;
+  }).join('');
+}
+renderTasks();
+
+function toggleTask(id, cb){
+  // Visual update only — actual DB update requires running Set-TaskChecked via PowerShell
+  const item = cb.closest('.task-item');
+  item.querySelector('.task-title').classList.toggle('done', cb.checked);
+  // Re-render to update progress bar
+  const caseKey = item.closest('.task-list').querySelector('h3').textContent;
+  const t = tasksArr.find(x=>x.TaskID===id);
+  if(t) t.IsChecked = cb.checked ? 1 : 0;
+  renderTasks();
+}
+
+// ── Domain pie chart (Chart.js via CDN) ──────────────────────────────────────
 const script=document.createElement('script');
 script.src='https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js';
 script.onload=()=>{

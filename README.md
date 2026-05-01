@@ -23,91 +23,54 @@ all while building a searchable SQLite database ready for future cloud CRM integ
 
 ## Prerequisites (one-time setup)
 
-### 1. PowerShell 5.1+
-Already included in Windows 10/11.
+- [ ] **PowerShell 5.1+** — Already included in Windows 10/11
+- [ ] **PSSQLite** — `Install-Module PSSQLite -Scope CurrentUser`
+- [ ] **Tesseract OCR** — `choco install tesseract`, then add `heb.traineddata` + `eng.traineddata` to `C:\Program Files\Tesseract-OCR\tessdata\`
+- [ ] **GhostScript** — `choco install ghostscript` (needed for scanned PDFs only)
+- [ ] **iTextSharp DLL** — Place `itextsharp.dll` in `Scripts\lib\deps\` (needed for digital PDFs only)
 
-### 2. PSSQLite (database module)
-Open PowerShell and run:
-```powershell
-Install-Module PSSQLite -Scope CurrentUser
-```
-
-### 3. Tesseract OCR with Hebrew pack (for scanned documents and images)
-```
-choco install tesseract
-```
-Then download `heb.traineddata` and `eng.traineddata` from:  
-`https://github.com/tesseract-ocr/tessdata`  
-and place both files in:  
-`C:\Program Files\Tesseract-OCR\tessdata\`
-
-### 4. GhostScript (for converting scanned PDFs to images before OCR)
-```
-choco install ghostscript
-```
-
-### 5. iTextSharp (for extracting text from digital PDFs)
-Download from NuGet (`iTextSharp` package), extract `itextsharp.dll`,  
-and place it in: `Scripts\lib\deps\itextsharp.dll`
-
-> **Note:** Steps 3–5 are only required for scanned documents and image files.  
+> Steps 3–5 are only required for scanned documents and image files.  
 > Word (DOCX), PowerPoint (PPTX), and text-based PDFs work without them.
 
 ---
 
 ## Quick Start
 
-### Step 1 — Check prerequisites
-```powershell
-.\Scripts\Setup\00-Install-Prerequisites.ps1
-```
-
-### Step 2 — Set your root folder
-Edit `Scripts\lib\Config.ps1` and change:
-```powershell
-$RootPath = "C:\MyFiles"   # ← change this to your actual folder
-```
-
-### Step 3 — Create the folder structure
-```powershell
-.\Scripts\Setup\01-CreateFolderStructure.ps1
-```
-
-### Step 4 — Run the full pipeline (or use the menu)
-**Option A — Hebrew menu (recommended for non-technical users):**
-```powershell
-.\Scripts\START-HERE.ps1
-```
-
-**Option B — Full pipeline directly:**
-```powershell
-.\Scripts\Run-All.ps1
-```
-
-### Step 5 — Review the HTML report
-The report opens automatically. Check:
-- **לקוחות (Clients)** — all files per client
-- **תיקים (Cases)** — all documents per case  
-- **תוכנית פעולה (Action Plan)** — proposed renames and moves
-
-### Step 6 — Approve and apply
-Edit the `ActionPlan_*.csv` file: change `UserAction` from `PENDING` to `APPROVED`  
-for each file you want renamed/moved. Then run:
-```powershell
-.\Scripts\Action\08-Apply-Approved.ps1 -CsvPath "path\to\ActionPlan_*.csv"
-```
-
-### Step 7 — Restore anything (if needed)
-```powershell
-# List all reversible actions
-.\Scripts\Action\Restore-Quarantine.ps1 -ListOnly
-
-# Restore a specific file
-.\Scripts\Action\Restore-Quarantine.ps1 -FileID 42
-
-# Full rollback to pre-run state (using saved manifest)
-.\Scripts\Action\Restore-Quarantine.ps1 -ManifestFile "_Reports\Manifest_20240501_143022.json"
-```
+- [ ] **Step 1 — Check prerequisites**
+  ```powershell
+  .\Scripts\Setup\00-Install-Prerequisites.ps1
+  ```
+- [ ] **Step 2 — Set your root folder**  
+  Edit `Scripts\lib\Config.ps1` and change:
+  ```powershell
+  $RootPath = "C:\MyFiles"   # ← change this to your actual folder
+  ```
+- [ ] **Step 3 — Create the folder structure**
+  ```powershell
+  .\Scripts\Setup\01-CreateFolderStructure.ps1
+  ```
+- [ ] **Step 4 — Run the full pipeline** (or use the Hebrew menu)  
+  ```powershell
+  .\Scripts\START-HERE.ps1        # Hebrew menu — recommended
+  # or directly:
+  .\Scripts\Run-All.ps1
+  ```
+- [ ] **Step 5 — Review the HTML report** (opens automatically)
+  - **לקוחות (Clients)** — all files per client
+  - **תיקים (Cases)** — all documents per case
+  - **משימות (Tasks)** — per-case checklist with due dates and priorities
+  - **תוכנית פעולה (Action Plan)** — proposed renames and moves
+- [ ] **Step 6 — Approve and apply**  
+  Edit `ActionPlan_*.csv`: change `UserAction` from `PENDING` to `APPROVED`, then:
+  ```powershell
+  .\Scripts\Action\08-Apply-Approved.ps1 -CsvPath "path\to\ActionPlan_*.csv"
+  ```
+- [ ] **Step 7 — Restore anything (if needed)**
+  ```powershell
+  .\Scripts\Action\Restore-Quarantine.ps1 -ListOnly           # list reversible actions
+  .\Scripts\Action\Restore-Quarantine.ps1 -FileID 42           # restore specific file
+  .\Scripts\Action\Restore-Quarantine.ps1 -ManifestFile "_Reports\Manifest_*.json"  # full rollback
+  ```
 
 ---
 
@@ -182,8 +145,26 @@ The SQLite database at `_Reports\LegalOrganizer.db` is designed for future cloud
 | `Clients` | Client master records |
 | `Cases` | Case records, linked to clients |
 | `Hearings` | Court hearing dates, linked to cases |
+| `Tasks` | Per-case checklist items with due dates, priority, category |
 | `LegalArguments` | Legal arguments for future knowledge base |
 | `ActionLog` | Every rename/move — permanent, used for restore |
+
+### Task Lists
+
+Tasks follow GitHub task list syntax — `[ ]` for open, `[x]` for done:
+
+```markdown
+- [ ] להגיש כתב תביעה עד 2024-06-01
+- [ ] לשלוח העתק לבית המשפט
+- [x] לאסוף תצהירי עדים
+```
+
+Each task has:
+- **Category**: `deadline` | `filing` | `hearing` | `payment` | `correspondence` | `general`
+- **Priority**: `high` | `normal` | `low`
+- **DueDate**: ISO 8601 (YYYY-MM-DD)
+
+View and filter tasks in the **משימות** tab of the HTML report. Overdue tasks are highlighted in red; tasks due within 7 days shown in orange.
 
 **Full-text search** (run directly in any SQLite browser tool):
 ```sql

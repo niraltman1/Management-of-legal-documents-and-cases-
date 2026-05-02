@@ -58,7 +58,7 @@ UPDATE Clients SET LastName=@ln, FirstName=@fn WHERE ClientID=@id AND (LastName 
 "@ -SqlParameters @{ln=$lastName; fn=$firstName; id=$clientId}
             }
         } else {
-            $parts    = ($row.ClientName ?? "") -split '[\s,]+', 2
+            $parts    = (if ($row.ClientName) { $row.ClientName } else { "" }) -split '[\s,]+', 2
             $lastName = $parts[0]; $firstName = if ($parts.Count -gt 1) { $parts[1] } else { "" }
             $slug     = ($lastName + "_" + $firstName + "_" + $row.ClientIDNumber).Trim("_")
             $folderPath = Join-Path $script:RootPath "Legal\Clients\$slug"
@@ -110,7 +110,7 @@ VALUES (@ln, '', @fp, datetime('now'));
             } else { Join-Path $script:RootPath "Legal\Clients\לא-ידוע" }
 
             $caseFolderPath = Join-Path $clientSlug "Cases\$caseSlug"
-            $isCriminal     = ($row.CaseType -eq "criminal") ? 1 : 0
+            $isCriminal     = if ($row.CaseType -eq "criminal") { 1 } else { 0 }
 
             Invoke-SqliteQuery -DataSource $script:DbPath -Query @"
 INSERT OR IGNORE INTO Cases (ClientID, CaseNumber, CaseType, FolderPath,

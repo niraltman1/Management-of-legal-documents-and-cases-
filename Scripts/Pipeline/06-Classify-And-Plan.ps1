@@ -66,20 +66,20 @@ foreach ($row in $rows) {
     # Build ParsedIds object
     $parsedIds = [PSCustomObject]@{
         ClientName           = $row.ClientName
-        ClientNameConfidence = $row.ClientNameConfidence ?? 0
+        ClientNameConfidence = if ($null -ne $row.ClientNameConfidence) { $row.ClientNameConfidence } else { 0 }
         ClientIDNumber       = $row.ClientIDNumber
-        IDConfidence         = $row.IDConfidence ?? 0
+        IDConfidence         = if ($null -ne $row.IDConfidence)         { $row.IDConfidence }         else { 0 }
         CaseNumber           = $row.CaseNumber
-        CaseNumberConfidence = $row.CaseNumberConfidence ?? 0
-        CaseType             = $row.CaseType ?? "unknown"
+        CaseNumberConfidence = if ($null -ne $row.CaseNumberConfidence) { $row.CaseNumberConfidence } else { 0 }
+        CaseType             = if ($row.CaseType)                       { $row.CaseType }             else { "unknown" }
         ReportNumber         = $row.ReportNumber
         ProcedureNumber      = $row.ProcedureNumber
         DocumentDate         = $row.DocumentDate
-        OverallConfidence    = $row.OverallConfidence ?? 0
+        OverallConfidence    = if ($null -ne $row.OverallConfidence)    { $row.OverallConfidence }    else { 0 }
     }
 
     # Classify
-    $text = $row.ExtractedText ?? ""
+    $text = if ($row.ExtractedText) { $row.ExtractedText } else { "" }
     $classification = Get-DocumentClassification `
         -Text      $text `
         -FilePath  $row.OriginalPath `
@@ -101,7 +101,7 @@ WHERE FileID = @fid;
 }
 
     # Low confidence → route to review regardless of classification
-    $ocrConf = $row.OcrConfidence ?? 100
+    $ocrConf = if ($null -ne $row.OcrConfidence) { $row.OcrConfidence } else { 100 }
     if ($ocrConf -lt $OcrConfidenceThreshold -and $row.ExtractedText) {
         $classification.Domain    = "Unknown"
         $classification.SubFolder = "_Inbox\To-Review"

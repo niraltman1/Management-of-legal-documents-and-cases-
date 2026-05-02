@@ -122,7 +122,7 @@ foreach ($group in $dupGroups) {
         Invoke-SqliteQuery -DataSource $script:DbPath -Query @"
 INSERT OR REPLACE INTO Duplicates (GroupID, FileID, IsRecommendedKeep, QuarantineTier, UserAction)
 VALUES (@gid, @fid, @keep, @tier, 'REVIEW');
-"@ -SqlParameters @{gid=$groupId; fid=$f.FileID; keep=($f.FileID -eq $keepId ? 1 : 0); tier=$tier}
+"@ -SqlParameters @{gid=$groupId; fid=$f.FileID; keep=(if ($f.FileID -eq $keepId) { 1 } else { 0 }); tier=$tier}
     }
     $groupId++
 }

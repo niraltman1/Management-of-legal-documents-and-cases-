@@ -117,6 +117,17 @@ CREATE TABLE IF NOT EXISTS FileCaseLinks (
     DocumentRole      TEXT
 );
 
+CREATE TABLE IF NOT EXISTS FileClientLinks (
+    LinkID            INTEGER PRIMARY KEY AUTOINCREMENT,
+    FileID            INTEGER REFERENCES Files(FileID),
+    ClientID          INTEGER REFERENCES Clients(ClientID),
+    LinkSource        TEXT,
+    UNIQUE(FileID, ClientID)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fileclient_client ON FileClientLinks(ClientID);
+CREATE INDEX IF NOT EXISTS idx_fileclient_file   ON FileClientLinks(FileID);
+
 CREATE TABLE IF NOT EXISTS LegalArguments (
     ArgumentID        INTEGER PRIMARY KEY AUTOINCREMENT,
     Title             TEXT,

@@ -90,10 +90,24 @@ $dll     = Join-Path $depsDir "itextsharp.dll"
 if (Test-Path $dll) {
     Write-Host " OK" -ForegroundColor Green
 } else {
-    Write-Host " Not found at $dll" -ForegroundColor Yellow
-    Write-Host "       Download from NuGet: https://www.nuget.org/packages/iTextSharp"
-    Write-Host "       Extract itextsharp.dll and place in: $depsDir"
-    $issues += "itextsharp.dll missing. Download from NuGet."
+    Write-Host " מוריד אוטומטית..." -ForegroundColor Yellow
+    try {
+        if (-not (Test-Path $depsDir)) { New-Item -ItemType Directory -Path $depsDir -Force | Out-Null }
+        $nupkg = Join-Path $env:TEMP "itextsharp_5513.nupkg"
+        (New-Object System.Net.WebClient).DownloadFile(
+            "https://www.nuget.org/api/v2/package/iTextSharp/5.5.13.3", $nupkg)
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $zip   = [System.IO.Compression.ZipFile]::OpenRead($nupkg)
+        $entry = $zip.Entries | Where-Object { $_.FullName -eq "lib/net40/itextsharp.dll" }
+        [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $dll, $true)
+        $zip.Dispose()
+        Remove-Item $nupkg -Force -ErrorAction SilentlyContinue
+        Write-Host "       OK — הותקן ($([math]::Round((Get-Item $dll).Length/1MB,1)) MB)" -ForegroundColor Green
+    } catch {
+        Write-Host "       FAIL — $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "       הרץ ידנית: .\Scripts\Setup\Download-Dependencies.ps1" -ForegroundColor Yellow
+        $issues += "itextsharp.dll: הורדה אוטומטית נכשלה. הרץ .\Scripts\Setup\Download-Dependencies.ps1"
+    }
 }
 
 # ── Summary ───────────────────────────────────────────────────────────────────

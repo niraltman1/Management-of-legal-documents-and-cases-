@@ -12,6 +12,13 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 $ScriptDir = $PSScriptRoot
 . "$ScriptDir\lib\Config.ps1"
 
+# Auto-download itextsharp.dll if missing
+$_dll = Join-Path $ScriptDir "lib\deps\itextsharp.dll"
+if (-not (Test-Path $_dll)) {
+    Write-Host "  itextsharp.dll חסר — מוריד אוטומטית..." -ForegroundColor Yellow
+    & "$ScriptDir\Setup\Download-Dependencies.ps1"
+}
+
 function Show-Menu {
     Clear-Host
     Write-Host ""

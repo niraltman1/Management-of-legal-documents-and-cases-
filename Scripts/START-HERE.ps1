@@ -33,9 +33,12 @@ function Show-Menu {
     Write-Host "  [4]  שחזר קובץ שהועבר" -ForegroundColor White
     Write-Host "       (בטל כל פעולה שבוצעה — אפשרי תמיד)" -ForegroundColor Gray
     Write-Host ""
-    Write-Host "  [5]  בדוק ספריות נחיתה (_Inbox)" -ForegroundColor White
+    Write-Host "  [5]  סקור תיקיית הסגר (_Quarantine)" -ForegroundColor White
+    Write-Host "       (הצג קבצים כפולים שהוסגרו — החלט מה לעשות איתם)" -ForegroundColor Gray
     Write-Host ""
-    Write-Host "  [6]  הגדרות — שנה תיקיית שורש" -ForegroundColor White
+    Write-Host "  [6]  בדוק ספריות נחיתה (_Inbox)" -ForegroundColor White
+    Write-Host ""
+    Write-Host "  [7]  הגדרות — שנה תיקיית שורש" -ForegroundColor White
     Write-Host ""
     Write-Host "  [0]  יציאה" -ForegroundColor DarkGray
     Write-Host ""
@@ -51,7 +54,7 @@ function Confirm-Action {
 $running = $true
 while ($running) {
     Show-Menu
-    $choice = Read-Host "  בחר אפשרות (0-6)"
+    $choice = Read-Host "  בחר אפשרות (0-7)"
 
     switch ($choice) {
         "1" {
@@ -102,6 +105,20 @@ while ($running) {
         }
         "5" {
             Write-Host ""
+            Write-Host "  ── סקירת _Quarantine ──" -ForegroundColor Yellow
+            Write-Host "  [A]  הצג תוכן (בלי שינויים)"
+            Write-Host "  [B]  בחר קובץ לשחזור"
+            Write-Host "  [C]  מחק קבצים ישנים (לאחר $($script:QuarantineDays) ימים)"
+            $sub = Read-Host "  בחר"
+            switch ($sub.ToUpper()) {
+                "A" { & "$ScriptDir\Action\Review-Quarantine.ps1" -ListOnly }
+                "B" { & "$ScriptDir\Action\Review-Quarantine.ps1" }
+                "C" { & "$ScriptDir\Action\Review-Quarantine.ps1" -AutoPurge }
+            }
+            Read-Host "  הקש Enter לחזרה לתפריט"
+        }
+        "6" {
+            Write-Host ""
             $inboxPath = Join-Path $script:RootPath "_Inbox"
             if (Test-Path $inboxPath) {
                 $files = Get-ChildItem $inboxPath -Recurse -File
@@ -112,7 +129,7 @@ while ($running) {
             }
             Read-Host "  הקש Enter לחזרה לתפריט"
         }
-        "6" {
+        "7" {
             Write-Host ""
             Write-Host "  תיקייה נוכחית: $($script:RootPath)" -ForegroundColor Gray
             $newPath = Read-Host "  הזן תיקיית שורש חדשה (Enter לביטול)"
@@ -129,7 +146,7 @@ while ($running) {
             }
             Read-Host "  הקש Enter לחזרה לתפריט"
         }
-        "0" { $running = $false }
+        "0"     { $running = $false }
         default { Write-Host "  בחירה לא תקינה." -ForegroundColor Red; Start-Sleep 1 }
     }
 }

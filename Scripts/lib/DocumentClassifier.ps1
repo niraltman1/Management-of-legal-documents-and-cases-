@@ -131,10 +131,10 @@ function Get-DocumentClassification {
         $result.SubFolder = "Legal-Research\Commentary"
     }
 
-    # Personal documents
+    # Personal documents (ID cards, licenses, fee agreements, invoices)
     if ($result.Domain -eq "Unknown") {
-        if ($result.DocumentTypeSlug -in "TeuzdatZehut","RishyonNehiga","YipuiKoach","HeskemSchtat","Cheshbonit") {
-            $result.Domain    = "Legal-Client"
+        if ($result.DocumentTypeSlug -in @("TeuzdatZehut","RishyonNehiga","YipuiKoach","HeskemSchtat","Cheshbonit")) {
+            $result.Domain    = "Legal-Case"
             $result.SubFolder = "Personal"
         }
     }

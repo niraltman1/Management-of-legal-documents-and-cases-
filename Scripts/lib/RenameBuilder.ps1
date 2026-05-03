@@ -174,12 +174,15 @@ function Resolve-DestinationFolder {
 
     switch ($domain) {
         "Legal-Case" {
-            # Client folder → case subfolder → document-role subfolder
             $clientSlug = Build-ClientSlug $ParsedIds
-            $caseSlug   = Build-CaseSlug   $ParsedIds
-            $roleFolder = $Classification.SubFolder  # e.g. "Pleadings"
-            $path = Join-Path $RootPath "Legal\Clients\$clientSlug\Cases\$caseSlug\$roleFolder"
-            return $path
+            # Personal docs (ID, license, fee agreement) go directly under client folder
+            if ($Classification.SubFolder -eq "Personal") {
+                return Join-Path $RootPath "Legal\Clients\$clientSlug\Personal"
+            }
+            # All other legal docs go under a case subfolder
+            $caseSlug   = Build-CaseSlug $ParsedIds
+            $roleFolder = $Classification.SubFolder
+            return Join-Path $RootPath "Legal\Clients\$clientSlug\Cases\$caseSlug\$roleFolder"
         }
         "Legal-Research" {
             return Join-Path $RootPath $Classification.SubFolder
@@ -223,9 +226,8 @@ function Build-CaseSlug {
 function Get-MedicalSubject {
     param([string]$SubFolder)
     $parts = $SubFolder -split '[/\\]'
-    # Return the last meaningful segment
-    $last = $parts | Where-Object { $_ -and $_ -notmatch '^(Medical|Courses|Year)$' } | Select-Object -Last 1
-    return if ($last) { $last } else { "רפואה" }
+    $last  = $parts | Where-Object { $_ -and $_ -notmatch '^(Medical|Courses|Year)$' } | Select-Object -Last 1
+    if ($last) { return $last } else { return "רפואה" }
 }
 
 function Get-TeachingSubject {

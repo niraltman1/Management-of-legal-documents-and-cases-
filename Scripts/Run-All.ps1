@@ -13,7 +13,10 @@ param(
     [switch]$Force,              # re-process everything from scratch
     [int]$MaxOcrPages  = 10,
     [switch]$NoReport,           # skip HTML report generation
-    [switch]$NoOpen              # don't auto-open report in browser
+    [switch]$NoOpen,             # don't auto-open report in browser
+    [switch]$UseAI,              # run AI enrichment + procedural analysis — requires Ollama + law-il-E2B
+    [switch]$SkipBrief,          # skip step 09 (brief prep) even when -UseAI
+    [switch]$NoDraft             # skip step 10 (document generation) — always interactive, so usually skipped
 )
 
 $ScriptDir = $PSScriptRoot
@@ -54,10 +57,20 @@ Run-Step "03 — Extract content"   "Pipeline\03-Extract-Content.ps1" `
 Run-Step "04 — Parse identifiers" "Pipeline\04-Parse-Identifiers.ps1" `
     @{ Force = $Force }
 
+if ($UseAI) {
+    Run-Step "04b — AI enrichment" "Pipeline\04b-AI-Enrich.ps1" @{}
+}
+
 Run-Step "05 — Build clients/cases" "Pipeline\05-Build-Clients-Cases.ps1" @{}
 
 Run-Step "06 — Classify & plan"   "Pipeline\06-Classify-And-Plan.ps1" `
     @{ Force = $Force }
+
+if ($UseAI -and -not $SkipBrief) {
+    Write-Host "── 09 — Prepare case briefs (AI procedural analysis)" -ForegroundColor Yellow
+    & "$ScriptDir\Pipeline\09-Prepare-Brief.ps1" -DbPath $script:DbPath -Force:$Force
+    Write-Host ""
+}
 
 if (-not $NoReport) {
     Run-Step "07 — Generate report"   "Pipeline\07-Generate-Report.ps1" `
@@ -69,8 +82,13 @@ Write-Host ""
 Write-Host "Pipeline complete in $([int]$elapsed.TotalMinutes)m $($elapsed.Seconds)s" -ForegroundColor Green
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Cyan
-Write-Host "  1. Review the HTML report that just opened in your browser."
+Write-Host "  1. Review the HTML report (Summary / Timeline / Brief tabs)."
 Write-Host "  2. Check the Action Plan tab — review proposed renames."
 Write-Host "  3. Edit ActionPlan_*.csv: set UserAction = 'APPROVED' for files you want moved."
 Write-Host "  4. Run: .\Scripts\Action\08-Apply-Approved.ps1 -CsvPath '<path to CSV>'"
+Write-Host ""
+if (-not $UseAI) {
+    Write-Host "  Tip: Run with -UseAI to enable AI enrichment + procedural deadline calculation." -ForegroundColor Gray
+}
+Write-Host "  Tip: .\Scripts\Pipeline\10-Generate-Document.ps1 -CaseID <n> to draft a document." -ForegroundColor Gray
 Write-Host ""

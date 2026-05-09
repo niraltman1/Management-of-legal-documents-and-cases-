@@ -11,6 +11,7 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 
 $ScriptDir = $PSScriptRoot
 . "$ScriptDir\lib\Config.ps1"
+. "$ScriptDir\lib\LegalAI.ps1"
 
 # Auto-download itextsharp.dll if missing
 $_dll = Join-Path $ScriptDir "lib\deps\itextsharp.dll"
@@ -21,11 +22,15 @@ if (-not (Test-Path $_dll)) {
 
 function Show-Menu {
     Clear-Host
+    $aiStatus = if (Test-OllamaAvailable) { " [AI: ON]" } else { "" }
     Write-Host ""
     Write-Host "  ╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
     Write-Host "  ║     מנהל קבצים משפטיים — תפריט ראשי         ║" -ForegroundColor Cyan
     Write-Host "  ╠══════════════════════════════════════════════╣" -ForegroundColor Cyan
     Write-Host "  ║  תיקיית שורש: $($script:RootPath.PadRight(30))║" -ForegroundColor Gray
+    if ($aiStatus) {
+        Write-Host "  ║  $('AI: law-il-E2B פעיל'.PadRight(44))║" -ForegroundColor Green
+    }
     Write-Host "  ╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "  [1]  סרוק את כל הקבצים ובנה מסד נתונים" -ForegroundColor White
@@ -47,6 +52,19 @@ function Show-Menu {
     Write-Host ""
     Write-Host "  [7]  הגדרות — שנה תיקיית שורש" -ForegroundColor White
     Write-Host ""
+    if ($aiStatus) {
+        Write-Host "  [8]  סריקה + ניתוח AI מלא (law-il-E2B)" -ForegroundColor Magenta
+        Write-Host "       (זיהוי קבצים + מועדי הגשה + ניתוח סתירות)" -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "  [9]  כלי עוזר AI לתיק ספציפי" -ForegroundColor Magenta
+        Write-Host "       (הכן Brief לדיון / צור טיוטת מסמך / הצג ציר זמן)" -ForegroundColor DarkGray
+    } else {
+        Write-Host "  [8]  התקן בינה מלאכותית (Ollama + law-il-E2B)" -ForegroundColor DarkGray
+        Write-Host "       (דרוש אינטרנט, ~3.4 GB — מאיץ זיהוי ומוסיף מועדי הגשה)" -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "  [9]  כלי עוזר AI (דורש התקנת [8] תחילה)" -ForegroundColor DarkGray
+    }
+    Write-Host ""
     Write-Host "  [0]  יציאה" -ForegroundColor DarkGray
     Write-Host ""
 }
@@ -61,7 +79,7 @@ function Confirm-Action {
 $running = $true
 while ($running) {
     Show-Menu
-    $choice = Read-Host "  בחר אפשרות (0-7)"
+    $choice = Read-Host "  בחר אפשרות (0-9)"
 
     switch ($choice) {
         "1" {
@@ -152,6 +170,59 @@ while ($running) {
                 Write-Host "  התיקייה לא נמצאה: $newPath" -ForegroundColor Red
             }
             Read-Host "  הקש Enter לחזרה לתפריט"
+        }
+        "8" {
+            Write-Host ""
+            if (Test-OllamaAvailable) {
+                Write-Host "  מריץ סריקה מלאה עם ניתוח AI..." -ForegroundColor Magenta
+                Write-Host "  כולל: זיהוי מסמכים + חישוב מועדי הגשה + ניתוח סתירות" -ForegroundColor Gray
+                Write-Host ""
+                & "$ScriptDir\Run-All.ps1" -UseAI
+            } else {
+                Write-Host "  Ollama לא מותקן — מתחיל התקנה (~3.4 GB)..." -ForegroundColor Yellow
+                & "$ScriptDir\Setup\02b-Install-Ollama.ps1"
+            }
+            Read-Host "  הקש Enter לחזרה לתפריט"
+        }
+        "9" {
+            Write-Host ""
+            if (-not (Test-OllamaAvailable)) {
+                Write-Host "  ⚠ Ollama לא זמין. הרץ תחילה אפשרות [8] להתקנה." -ForegroundColor Yellow
+                Read-Host "  הקש Enter לחזרה לתפריט"
+            } else {
+                Write-Host "  ── כלי עוזר AI ──" -ForegroundColor Magenta
+                Write-Host "  [A]  הכן Brief לדיון (ניתוח סתירות + שאלות לחקירה נגדית)"
+                Write-Host "  [B]  צור טיוטת מסמך משפטי (AI)"
+                Write-Host "  [C]  הפק דוח HTML עם ציר זמן ו-Brief"
+                $sub = Read-Host "  בחר"
+                switch ($sub.ToUpper()) {
+                    "A" {
+                        Write-Host ""
+                        $cidIn = Read-Host "  הזן CaseID (0 = כל התיקים הפעילים)"
+                        $cidVal = [int]$cidIn
+                        if ($cidVal -gt 0) {
+                            & "$ScriptDir\Pipeline\09-Prepare-Brief.ps1" -DbPath $script:DbPath -CaseID $cidVal
+                        } else {
+                            & "$ScriptDir\Pipeline\09-Prepare-Brief.ps1" -DbPath $script:DbPath
+                        }
+                    }
+                    "B" {
+                        Write-Host ""
+                        $cidIn2 = Read-Host "  הזן CaseID"
+                        if ($cidIn2 -match '^\d+$') {
+                            & "$ScriptDir\Pipeline\10-Generate-Document.ps1" -DbPath $script:DbPath -CaseID ([int]$cidIn2)
+                        } else {
+                            & "$ScriptDir\Pipeline\10-Generate-Document.ps1" -DbPath $script:DbPath
+                        }
+                    }
+                    "C" {
+                        Write-Host ""
+                        Write-Host "  מפיק דוח HTML עם ציר זמן..." -ForegroundColor Cyan
+                        & "$ScriptDir\Pipeline\07-Generate-Report.ps1"
+                    }
+                }
+                Read-Host "  הקש Enter לחזרה לתפריט"
+            }
         }
         "0"     { $running = $false }
         default { Write-Host "  בחירה לא תקינה." -ForegroundColor Red; Start-Sleep 1 }

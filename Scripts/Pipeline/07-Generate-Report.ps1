@@ -21,6 +21,9 @@ if ($OutputPath) { $script:OutputPath = $OutputPath }
 Import-Module PSSQLite -ErrorAction Stop
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
+# Ensure v3.0 schema exists before querying new tables
+Update-DatabaseSchema-v3 -DbPath $script:DbPath
+
 $stamp      = Get-Date -Format "yyyyMMdd_HHmmss"
 $reportPath = Join-Path $script:OutputPath "Report_$stamp.html"
 Write-Host "Generating HTML report..." -ForegroundColor Cyan
@@ -66,7 +69,7 @@ $plan = Invoke-SqliteQuery -DataSource $script:DbPath -Query @"
 SELECT f.FileID, f.OriginalName, f.OriginalPath, f.Extension, f.SizeBytes,
        fp.SuggestedName, fp.SuggestedPath, fp.NamingReason, fp.UserAction,
        pi.CaseNumber, pi.ClientName, pi.DocumentType, pi.OverallConfidence,
-       fc.OcrConfidence, fc.ExtractionMethod
+       pi.AIEnriched, fc.OcrConfidence, fc.ExtractionMethod
 FROM FilePlan fp
 JOIN Files f ON f.FileID = fp.FileID
 LEFT JOIN ParsedIdentifiers pi ON pi.FileID = fp.FileID
@@ -103,6 +106,39 @@ LEFT JOIN Clients cl ON cl.ClientID = COALESCE(t.ClientID, c.ClientID)
 ORDER BY t.IsChecked ASC, t.Priority DESC, t.DueDate ASC;
 "@
 
+# ── v3.0: Timeline data (procedural steps + factual events) ───────────────────
+$timelineItems = @()
+try {
+    $procSteps = Invoke-SqliteQuery -DataSource $script:DbPath -Query @"
+SELECT ps.StepID, ps.CaseID, ps.StepName, ps.ExpectedDate, ps.ActualDate,
+       ps.Status, ps.TriggerDate, ps.Notes, ps.AIGenerated,
+       ca.CaseNumber, cl.LastName || ' ' || cl.FirstName AS ClientName
+FROM Procedural_Steps ps
+JOIN Cases ca ON ca.CaseID = ps.CaseID
+LEFT JOIN Clients cl ON cl.ClientID = ca.ClientID
+WHERE ps.ExpectedDate IS NOT NULL
+ORDER BY ps.ExpectedDate ASC;
+"@
+    if ($procSteps) { $timelineItems += @($procSteps) }
+} catch { <# table not yet populated #> }
+
+$briefItems = @()
+try {
+    $briefItems = Invoke-SqliteQuery -DataSource $script:DbPath -Query @"
+SELECT cb.BriefID, cb.CaseID, cb.BriefType, cb.ContradictionFound,
+       cb.RecommendedQuestion, cb.SuggestedDocument, cb.LegalBasis,
+       cb.ConfidenceScore, cb.CreatedDate,
+       ca.CaseNumber, cl.LastName || ' ' || cl.FirstName AS ClientName,
+       f.OriginalName AS SourceFile
+FROM Case_Brief cb
+JOIN Cases ca ON ca.CaseID = cb.CaseID
+LEFT JOIN Clients cl ON cl.ClientID = ca.ClientID
+LEFT JOIN Files f ON f.FileID = cb.FileID
+ORDER BY cb.BriefType, cb.ConfidenceScore DESC;
+"@
+    if (-not $briefItems) { $briefItems = @() }
+} catch { $briefItems = @() }
+
 # ── Build HTML ─────────────────────────────────────────────────────────────────
 
 $totalMB = [math]::Round($summary.TotalMB, 1)
@@ -117,6 +153,10 @@ $unresolvedJson = $unresolved | ConvertTo-Json -Compress
 $tasksJson      = $tasks      | ConvertTo-Json -Compress
 $taskCount      = if ($tasks) { @($tasks).Count } else { 0 }
 $pendingTasks   = if ($tasks) { @($tasks | Where-Object { $_.IsChecked -eq 0 }).Count } else { 0 }
+$timelineJson   = $timelineItems | ConvertTo-Json -Compress -Depth 4
+$briefJson      = $briefItems    | ConvertTo-Json -Compress -Depth 4
+$overdueCount   = if ($timelineItems) { @($timelineItems | Where-Object { $_.Status -eq 'missed' }).Count } else { 0 }
+$briefCount     = if ($briefItems) { @($briefItems).Count } else { 0 }
 
 $domainData = @"
 [$($summary.LegalCase),$($summary.LegalResearch),$($summary.Medical),$($summary.Teaching),$($summary.Personal),$($summary.Unknown)]
@@ -191,6 +231,28 @@ canvas{max-width:400px;margin:0 auto;display:block}
 .task-filter-row button{padding:5px 12px;border:1px solid #ccc;border-radius:16px;
   background:#fff;cursor:pointer;font-size:.8rem}
 .task-filter-row button.active{background:#1a3a5c;color:#fff;border-color:#1a3a5c}
+/* v3.0 — Timeline */
+#timeline-container{height:420px;border:1px solid #ccc;border-radius:8px;background:#fff;overflow:hidden}
+.vis-item.procedural{background:#1a3a5c;border-color:#0f2540;color:#fff;font-size:.78rem}
+.vis-item.factual{background:#27ae60;border-color:#1e8449;color:#fff;font-size:.78rem}
+.vis-item.missed{background:#c0392b;border-color:#96281b;color:#fff;font-size:.78rem}
+.vis-item.legal-point{background:#e67e22;border-color:#ca6f1e;color:#fff}
+.vis-group-header{background:#f4f6f9;font-weight:bold;padding:6px 10px;font-size:.82rem}
+.tl-legend{display:flex;gap:16px;margin:10px 0;flex-wrap:wrap;font-size:.8rem}
+.tl-dot{width:14px;height:14px;border-radius:3px;display:inline-block;margin-left:5px}
+/* v3.0 — Brief */
+.brief-card{background:#fff;border-radius:8px;padding:16px;box-shadow:0 1px 4px rgba(0,0,0,.1);
+  margin-bottom:12px}
+.brief-card.contradiction{border-right:4px solid #c0392b}
+.brief-card.question{border-right:4px solid #2980b9}
+.brief-card.next-document{border-right:4px solid #27ae60}
+.brief-type-label{font-size:.72rem;font-weight:bold;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+.brief-card.contradiction .brief-type-label{color:#c0392b}
+.brief-card.question .brief-type-label{color:#2980b9}
+.brief-card.next-document .brief-type-label{color:#27ae60}
+.legal-icon{font-size:1.1rem}
+.overdue-banner{background:#fdecea;border:1px solid #f5c6cb;border-radius:6px;
+  padding:10px 14px;margin-bottom:12px;color:#721c24;font-weight:bold}
 </style>
 </head>
 <body>
@@ -203,6 +265,8 @@ canvas{max-width:400px;margin:0 auto;display:block}
   <button class="active" onclick="show('summary')">סיכום</button>
   <button onclick="show('clients')">לקוחות ($($clients.Count))</button>
   <button onclick="show('cases')">תיקים ($($cases.Count))</button>
+  <button onclick="show('timeline')">⏱ ציר זמן$(if ($overdueCount -gt 0) { " 🔴$overdueCount" })</button>
+  <button onclick="show('brief')">⚖ Brief ($briefCount)</button>
   <button onclick="show('tasks')">משימות ($pendingTasks פתוחות)</button>
   <button onclick="show('plan')">תוכנית פעולה ($($plan.Count))</button>
   <button onclick="show('dups')">כפולים ($dupCount קבוצות)</button>
@@ -220,6 +284,36 @@ canvas{max-width:400px;margin:0 auto;display:block}
     <div class="card"><div class="num">$($summary.Planned)</div><div class="lbl">מוכן להעברה</div></div>
   </div>
   <canvas id="domainChart" width="400" height="300"></canvas>
+</div>
+
+<!-- TIMELINE TAB -->
+<div id="tab-timeline" class="tab">
+  $(if ($overdueCount -gt 0) { "<div class=`"overdue-banner`">⚠ $overdueCount מועד(ים) שחלף זמנם — נדרשת פעולה מיידית!</div>" })
+  <div class="tl-legend">
+    <span><span class="tl-dot" style="background:#1a3a5c"></span> שלב פרוצדורלי נדרש</span>
+    <span><span class="tl-dot" style="background:#27ae60"></span> אירוע עובדתי</span>
+    <span><span class="tl-dot" style="background:#c0392b"></span> מועד שחלף</span>
+    <span><span class="tl-dot" style="background:#e67e22"></span> ⚖ טענה משפטית</span>
+  </div>
+  <div style="margin-bottom:8px">
+    <select id="tlCaseFilter" onchange="renderTimeline()" style="padding:6px 10px;border:1px solid #ccc;border-radius:4px">
+      <option value="">כל התיקים</option>
+    </select>
+  </div>
+  <div id="timeline-container"></div>
+  <div id="tl-table" style="margin-top:16px"></div>
+</div>
+
+<!-- BRIEF TAB -->
+<div id="tab-brief" class="tab">
+  <div style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap">
+    <button class="active" onclick="filterBrief('all',this)" style="padding:5px 14px;border:1px solid #ccc;border-radius:16px;background:#1a3a5c;color:#fff;cursor:pointer">הכל</button>
+    <button onclick="filterBrief('contradiction',this)" style="padding:5px 14px;border:1px solid #ccc;border-radius:16px;background:#fff;cursor:pointer">🔴 סתירות</button>
+    <button onclick="filterBrief('question',this)" style="padding:5px 14px;border:1px solid #ccc;border-radius:16px;background:#fff;cursor:pointer">🔵 שאלות לחקירה נגדית</button>
+    <button onclick="filterBrief('next-document',this)" style="padding:5px 14px;border:1px solid #ccc;border-radius:16px;background:#fff;cursor:pointer">🟢 מסמך הבא</button>
+  </div>
+  <input type="text" id="briefSearch" onkeyup="renderBrief()" placeholder="חפש בתיק, שאלה, סתירה...">
+  <div id="briefList"></div>
 </div>
 
 <!-- CLIENTS TAB -->
@@ -292,6 +386,8 @@ const plan       = $planJson;
 const dups       = $duplicatesJson;
 const unresolved = $unresolvedJson;
 const tasksData  = $tasksJson;
+const timelineData = $timelineJson;
+const briefData    = $briefJson;
 
 function show(tab){
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
@@ -478,6 +574,160 @@ function toggleTask(id, cb){
   const t = tasksArr.find(x=>x.TaskID===id);
   if(t) t.IsChecked = cb.checked ? 1 : 0;
   renderTasks();
+}
+
+// ── Timeline (vis-timeline) ────────────────────────────────────────────────────
+const tlArr = Array.isArray(timelineData) ? timelineData : (timelineData ? [timelineData] : []);
+let visTimeline = null;
+
+// Populate case filter dropdown
+const tlSel = document.getElementById('tlCaseFilter');
+const tlCaseNums = [...new Set(tlArr.map(s=>s.CaseNumber).filter(Boolean))];
+tlCaseNums.forEach(cn => {
+  const o = document.createElement('option'); o.value = cn; o.textContent = cn; tlSel.appendChild(o);
+});
+
+function renderTimeline(){
+  const filter = tlSel.value;
+  const arr = filter ? tlArr.filter(s=>s.CaseNumber===filter) : tlArr;
+  const today = new Date();
+
+  if(!arr.length){
+    document.getElementById('timeline-container').innerHTML =
+      '<p style="padding:20px;color:#888;text-align:center">אין נתוני ציר זמן — הרץ Step 9 (09-Prepare-Brief.ps1) תחילה.</p>';
+    document.getElementById('tl-table').innerHTML=''; return;
+  }
+
+  // Build vis-timeline items
+  const items = arr.map((s,i)=>{
+    const d = s.ActualDate || s.ExpectedDate;
+    if(!d) return null;
+    const missed = s.Status==='missed';
+    const grp = 1; // all procedural steps in group 1
+    return {
+      id: i+1,
+      content: (missed?'⚠ ':'') + esc(s.StepName) + (s.CaseNumber?'<br><small>'+esc(s.CaseNumber)+'</small>':''),
+      start: d,
+      group: grp,
+      className: missed ? 'missed' : 'procedural',
+      title: [s.StepName, s.Notes, 'מועד: '+d, s.LegalBasis].filter(Boolean).join('\n')
+    };
+  }).filter(Boolean);
+
+  // Group 2: today marker
+  items.push({
+    id: 9999,
+    content: '▶ היום',
+    start: today.toISOString().slice(0,10),
+    group: 2,
+    className: 'factual',
+    editable: false
+  });
+
+  const groups = [
+    {id:1, content:'<strong>ציר פרוצדורלי</strong><br><small>שלבים נדרשים לפי תקנות</small>'},
+    {id:2, content:'<strong>ציר עובדתי</strong><br><small>אירועים שזוהו במסמכים</small>'}
+  ];
+
+  // Load vis-timeline lazily then render
+  if(!window.vis){
+    const css=document.createElement('link');
+    css.rel='stylesheet';
+    css.href='https://unpkg.com/vis-timeline@7.7.3/styles/vis-timeline-graph2d.min.css';
+    document.head.appendChild(css);
+
+    const s=document.createElement('script');
+    s.src='https://unpkg.com/vis-timeline@7.7.3/standalone/umd/vis-timeline-graph2d.min.js';
+    s.onload=()=>_drawVis(items,groups,today);
+    document.head.appendChild(s);
+  } else {
+    _drawVis(items,groups,today);
+  }
+
+  // Render table below timeline
+  document.getElementById('tl-table').innerHTML = `
+    <table><thead><tr><th>שלב</th><th>תיק</th><th>מועד צפוי</th><th>מועד בפועל</th><th>סטטוס</th><th>בסיס חוקי</th></tr></thead>
+    <tbody>${arr.map(s=>{
+      const st = s.Status==='missed'?'<span class="badge badge-low">באיחור</span>':
+                 s.Status==='done'?'<span class="badge badge-high">בוצע</span>':
+                 '<span class="badge badge-pending">ממתין</span>';
+      return `<tr>
+        <td>${esc(s.StepName)}</td>
+        <td>${esc(s.CaseNumber||'')}</td>
+        <td>${esc(s.ExpectedDate||'')}</td>
+        <td>${esc(s.ActualDate||'—')}</td>
+        <td>${st}</td>
+        <td><small>${esc(s.Notes||s.LegalBasis||'')}</small></td>
+      </tr>`;}).join('')}
+    </tbody></table>`;
+}
+
+function _drawVis(items, groups, today){
+  const container = document.getElementById('timeline-container');
+  if(visTimeline){ visTimeline.destroy(); }
+  try {
+    const ds_items  = new vis.DataSet(items);
+    const ds_groups = new vis.DataSet(groups);
+    const opts = {
+      orientation: {axis:'top'},
+      showCurrentTime: true,
+      moveable: true,
+      zoomable: true,
+      groupOrder: 'id',
+      height: '400px',
+      locale: 'he',
+      tooltip: { followMouse: true }
+    };
+    visTimeline = new vis.Timeline(container, ds_items, ds_groups, opts);
+  } catch(e){
+    container.innerHTML='<p style="padding:20px;color:#c00">שגיאת ציר זמן: '+e.message+'</p>';
+  }
+}
+
+// Render timeline when tab is activated
+const origShow = window.show;
+window.show = function(tab){
+  origShow(tab);
+  if(tab==='timeline') renderTimeline();
+  if(tab==='brief')    renderBrief();
+};
+
+// ── Brief ──────────────────────────────────────────────────────────────────────
+const briefArr = Array.isArray(briefData) ? briefData : (briefData ? [briefData] : []);
+let briefFilter = 'all';
+
+function filterBrief(f, btn){
+  briefFilter = f;
+  document.querySelectorAll('#tab-brief button').forEach(b=>{
+    b.style.background=b===btn?'#1a3a5c':'#fff';
+    b.style.color=b===btn?'#fff':'';
+  });
+  renderBrief();
+}
+
+function renderBrief(){
+  const q = (document.getElementById('briefSearch').value||'').toLowerCase();
+  const arr = briefArr.filter(b=>{
+    if(briefFilter!=='all' && b.BriefType!==briefFilter) return false;
+    const text=[b.CaseNumber,b.ContradictionFound,b.RecommendedQuestion,b.SuggestedDocument,b.LegalBasis].join(' ').toLowerCase();
+    return !q || text.includes(q);
+  });
+
+  const el = document.getElementById('briefList');
+  if(!arr.length){ el.innerHTML='<p style="color:#888;padding:20px">אין פריטי Brief — הרץ 09-Prepare-Brief.ps1 תחילה.</p>'; return; }
+
+  const typeIcon = {contradiction:'🔴', question:'🔵', 'next-document':'🟢', 'timeline-event':'⏱'};
+  const typeLabel = {contradiction:'סתירה שזוהתה', question:'שאלה מומלצת לחקירה נגדית', 'next-document':'מסמך הבא מוצע', 'timeline-event':'אירוע ציר זמן'};
+
+  el.innerHTML = arr.map(b=>`
+    <div class="brief-card ${esc(b.BriefType)}">
+      <div class="brief-type-label">${typeIcon[b.BriefType]||'⚖'} ${typeLabel[b.BriefType]||esc(b.BriefType)} — תיק: ${esc(b.CaseNumber||'')} ${b.ClientName?'| '+esc(b.ClientName):''}</div>
+      ${b.ContradictionFound ? `<p><strong>סתירה:</strong> ${esc(b.ContradictionFound)}</p>` : ''}
+      ${b.RecommendedQuestion ? `<p><strong>שאלה:</strong> ${esc(b.RecommendedQuestion)}</p>` : ''}
+      ${b.SuggestedDocument ? `<p><strong>מסמך מוצע:</strong> ${esc(b.SuggestedDocument)}</p>` : ''}
+      ${b.LegalBasis ? `<p style="font-size:.78rem;color:#555">⚖ בסיס חוקי: ${esc(b.LegalBasis)}</p>` : ''}
+      ${b.ConfidenceScore ? `<p style="font-size:.75rem;color:#888">ביטחון AI: ${b.ConfidenceScore}% | ${esc(b.SourceFile||'')}</p>` : ''}
+    </div>`).join('');
 }
 
 // ── Domain pie chart (Chart.js via CDN) ──────────────────────────────────────

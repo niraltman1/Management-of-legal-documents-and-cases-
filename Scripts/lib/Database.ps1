@@ -59,7 +59,8 @@ CREATE TABLE IF NOT EXISTS ParsedIdentifiers (
     DocumentType          TEXT,
     DocumentTypeSlug      TEXT,
     DocTypeConfidence     INTEGER DEFAULT 0,
-    OverallConfidence     INTEGER DEFAULT 0
+    OverallConfidence     INTEGER DEFAULT 0,
+    AIEnriched            INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS Contacts (
@@ -211,6 +212,56 @@ CREATE INDEX IF NOT EXISTS idx_tasks_case     ON Tasks(CaseID);
 CREATE INDEX IF NOT EXISTS idx_tasks_due      ON Tasks(DueDate);
 CREATE INDEX IF NOT EXISTS idx_tasks_checked  ON Tasks(IsChecked);
 
+-- v3.0: Israeli procedural rules lookup table
+CREATE TABLE IF NOT EXISTS Rules_Engine (
+    RuleID          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ProcedureType   TEXT NOT NULL,
+    StepName        TEXT NOT NULL,
+    StepNameHeb     TEXT,
+    DaysFromTrigger INTEGER,
+    TriggerEvent    TEXT,
+    IsRequired      INTEGER DEFAULT 1,
+    LegalBasis      TEXT,
+    Notes           TEXT
+);
+
+-- v3.0: Per-case procedural timeline steps (calculated + actual)
+CREATE TABLE IF NOT EXISTS Procedural_Steps (
+    StepID          INTEGER PRIMARY KEY AUTOINCREMENT,
+    CaseID          INTEGER REFERENCES Cases(CaseID),
+    FileID          INTEGER REFERENCES Files(FileID),
+    RuleID          INTEGER REFERENCES Rules_Engine(RuleID),
+    StepName        TEXT,
+    TriggerEvent    TEXT,
+    TriggerDate     TEXT,
+    ExpectedDate    TEXT,
+    ActualDate      TEXT,
+    Status          TEXT DEFAULT 'pending',
+    Notes           TEXT,
+    CreatedDate     TEXT DEFAULT (date('now')),
+    AIGenerated     INTEGER DEFAULT 0
+);
+
+-- v3.0: Case brief items: contradictions, recommended questions, suggested docs
+CREATE TABLE IF NOT EXISTS Case_Brief (
+    BriefID             INTEGER PRIMARY KEY AUTOINCREMENT,
+    CaseID              INTEGER REFERENCES Cases(CaseID),
+    FileID              INTEGER REFERENCES Files(FileID),
+    BriefType           TEXT,
+    ContradictionFound  TEXT,
+    RecommendedQuestion TEXT,
+    SuggestedDocument   TEXT,
+    LegalBasis          TEXT,
+    ConfidenceScore     INTEGER DEFAULT 0,
+    CreatedDate         TEXT DEFAULT (date('now')),
+    AIGenerated         INTEGER DEFAULT 1
+);
+
+CREATE INDEX IF NOT EXISTS idx_proc_steps_case  ON Procedural_Steps(CaseID);
+CREATE INDEX IF NOT EXISTS idx_proc_steps_date  ON Procedural_Steps(ExpectedDate);
+CREATE INDEX IF NOT EXISTS idx_brief_case       ON Case_Brief(CaseID);
+CREATE INDEX IF NOT EXISTS idx_rules_type       ON Rules_Engine(ProcedureType);
+
 CREATE INDEX IF NOT EXISTS idx_files_md5       ON Files(MD5Hash);
 CREATE INDEX IF NOT EXISTS idx_files_status    ON Files(ProcessingStatus);
 CREATE INDEX IF NOT EXISTS idx_files_domain    ON Files(Domain);
@@ -223,6 +274,14 @@ CREATE INDEX IF NOT EXISTS idx_hearings_date   ON Hearings(HearingDate);
 "@
 
     Invoke-SqliteQuery -DataSource $DbPath -Query $schema
+
+    # Backward-compat: add AIEnriched column to existing databases
+    try {
+        Invoke-SqliteQuery -DataSource $DbPath -Query `
+            "ALTER TABLE ParsedIdentifiers ADD COLUMN AIEnriched INTEGER DEFAULT 0;" `
+            -ErrorAction SilentlyContinue
+    } catch { <# column already exists — ignore #> }
+
     Write-Host "  Database initialized: $DbPath" -ForegroundColor Green
 }
 
@@ -284,15 +343,18 @@ function Set-ProcessingStatus {
 
 function Upsert-ParsedIdentifiers {
     param([string]$DbPath, [hashtable]$Row)
+    if (-not $Row.ContainsKey('AIEnriched')) { $Row['AIEnriched'] = 0 }
     $q = @"
 INSERT INTO ParsedIdentifiers (
     FileID, ClientName, ClientNameConfidence, ClientIDNumber, IDConfidence,
     CaseNumber, CaseNumberConfidence, CaseType, ReportNumber, ProcedureNumber,
-    DocumentDate, DocumentType, DocumentTypeSlug, DocTypeConfidence, OverallConfidence)
+    DocumentDate, DocumentType, DocumentTypeSlug, DocTypeConfidence, OverallConfidence,
+    AIEnriched)
 VALUES (
     @FileID, @ClientName, @ClientNameConfidence, @ClientIDNumber, @IDConfidence,
     @CaseNumber, @CaseNumberConfidence, @CaseType, @ReportNumber, @ProcedureNumber,
-    @DocumentDate, @DocumentType, @DocumentTypeSlug, @DocTypeConfidence, @OverallConfidence)
+    @DocumentDate, @DocumentType, @DocumentTypeSlug, @DocTypeConfidence, @OverallConfidence,
+    @AIEnriched)
 ON CONFLICT(FileID) DO UPDATE SET
     ClientName=excluded.ClientName, ClientNameConfidence=excluded.ClientNameConfidence,
     ClientIDNumber=excluded.ClientIDNumber, IDConfidence=excluded.IDConfidence,
@@ -300,7 +362,8 @@ ON CONFLICT(FileID) DO UPDATE SET
     CaseType=excluded.CaseType, ReportNumber=excluded.ReportNumber,
     ProcedureNumber=excluded.ProcedureNumber, DocumentDate=excluded.DocumentDate,
     DocumentType=excluded.DocumentType, DocumentTypeSlug=excluded.DocumentTypeSlug,
-    DocTypeConfidence=excluded.DocTypeConfidence, OverallConfidence=excluded.OverallConfidence;
+    DocTypeConfidence=excluded.DocTypeConfidence, OverallConfidence=excluded.OverallConfidence,
+    AIEnriched=CASE WHEN excluded.AIEnriched=1 THEN 1 ELSE ParsedIdentifiers.AIEnriched END;
 "@
     Invoke-SqliteQuery -DataSource $DbPath -Query $q -SqlParameters $Row
 }
@@ -384,4 +447,126 @@ function Format-TaskMarkdown {
         "- $check $($t.Title)$due$pri"
     }
     return $lines -join "`n"
+}
+
+# ── v3.0 Schema Migration ──────────────────────────────────────────────────────
+
+function Update-DatabaseSchema-v3 {
+    param([string]$DbPath)
+
+    # Add new tables if they don't exist (safe to run multiple times)
+    $v3tables = @"
+CREATE TABLE IF NOT EXISTS Rules_Engine (
+    RuleID INTEGER PRIMARY KEY AUTOINCREMENT, ProcedureType TEXT NOT NULL,
+    StepName TEXT NOT NULL, StepNameHeb TEXT, DaysFromTrigger INTEGER,
+    TriggerEvent TEXT, IsRequired INTEGER DEFAULT 1, LegalBasis TEXT, Notes TEXT
+);
+CREATE TABLE IF NOT EXISTS Procedural_Steps (
+    StepID INTEGER PRIMARY KEY AUTOINCREMENT, CaseID INTEGER REFERENCES Cases(CaseID),
+    FileID INTEGER REFERENCES Files(FileID), RuleID INTEGER REFERENCES Rules_Engine(RuleID),
+    StepName TEXT, TriggerEvent TEXT, TriggerDate TEXT, ExpectedDate TEXT,
+    ActualDate TEXT, Status TEXT DEFAULT 'pending', Notes TEXT,
+    CreatedDate TEXT DEFAULT (date('now')), AIGenerated INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS Case_Brief (
+    BriefID INTEGER PRIMARY KEY AUTOINCREMENT, CaseID INTEGER REFERENCES Cases(CaseID),
+    FileID INTEGER REFERENCES Files(FileID), BriefType TEXT,
+    ContradictionFound TEXT, RecommendedQuestion TEXT, SuggestedDocument TEXT,
+    LegalBasis TEXT, ConfidenceScore INTEGER DEFAULT 0,
+    CreatedDate TEXT DEFAULT (date('now')), AIGenerated INTEGER DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_proc_steps_case ON Procedural_Steps(CaseID);
+CREATE INDEX IF NOT EXISTS idx_proc_steps_date ON Procedural_Steps(ExpectedDate);
+CREATE INDEX IF NOT EXISTS idx_brief_case      ON Case_Brief(CaseID);
+CREATE INDEX IF NOT EXISTS idx_rules_type      ON Rules_Engine(ProcedureType);
+"@
+    Invoke-SqliteQuery -DataSource $DbPath -Query $v3tables
+
+    # Seed Rules_Engine with Israeli procedural rules (only if empty)
+    $existing = Invoke-SqliteQuery -DataSource $DbPath -Query "SELECT COUNT(*) AS N FROM Rules_Engine"
+    if ($existing.N -eq 0) {
+        $seed = @(
+            # civil-standard (תביעה אזרחית רגילה — תקנות סדר הדין האזרחי)
+            @{PT='civil-standard'; SN='כתב הגנה';    SH='כתב הגנה';            D=60;  TE='complaint-filed';    LB='תקנה 20 לתקנות סדר הדין האזרחי'}
+            @{PT='civil-standard'; SN='גילוי מסמכים'; SH='גילוי ועיון';          D=30;  TE='pleadings-closed';   LB='תקנה 46'}
+            @{PT='civil-standard'; SN='תצהירי עדות'; SH='תצהירי עדות ראשית';    D=90;  TE='discovery-complete'; LB='תקנה 137'}
+            @{PT='civil-standard'; SN='חוות דעת מומחה'; SH='חוות דעת';          D=90;  TE='pleadings-closed';   LB='תקנה 130'}
+            @{PT='civil-standard'; SN='שאלונים';       SH='שאלונים';             D=30;  TE='pleadings-closed';   LB='תקנה 46'}
+            # fast-track (סדר דין מהיר)
+            @{PT='fast-track';     SN='כתב הגנה';    SH='כתב הגנה';             D=30;  TE='complaint-filed';    LB='תקנה 214ב'}
+            @{PT='fast-track';     SN='תגובה לכתב הגנה'; SH='תגובה';            D=15;  TE='defense-filed';      LB='תקנה 214ב'}
+            @{PT='fast-track';     SN='סיכומים';     SH='סיכומי טענות';          D=45;  TE='hearing-held';       LB='תקנה 214ח'}
+            # small-claims (תביעה קטנה)
+            @{PT='small-claims';   SN='כתב הגנה';    SH='כתב הגנה';             D=30;  TE='complaint-filed';    LB='תקנה 5 לתקנות שיפוט בתביעות קטנות'}
+            @{PT='small-claims';   SN='דיון ראשון';  SH='מועד דיון';             D=60;  TE='defense-filed';      LB='תקנה 9'}
+            # labor (סעש — בית דין לעבודה)
+            @{PT='labor';          SN='כתב הגנה';    SH='כתב הגנה';             D=30;  TE='complaint-filed';    LB='תקנה 13 לתקנות בית הדין לעבודה'}
+            @{PT='labor';          SN='פגישת גישור'; SH='גישור חובה';            D=30;  TE='case-assigned';      LB='חוק הגישור'}
+            @{PT='labor';          SN='תצהירי עדות'; SH='תצהירים';               D=60;  TE='discovery-complete'; LB='תקנה 35'}
+            # family (משפחה)
+            @{PT='family';         SN='כתב הגנה';    SH='כתב הגנה';             D=30;  TE='complaint-filed';    LB='תקנות המשפחה'}
+            @{PT='family';         SN='תסקיר סעד';   SH='תסקיר עו"ס לחוק';      D=60;  TE='complaint-filed';    LB='חוק הסכסוכים במשפחה'}
+            @{PT='family';         SN='חוות דעת פסיכולוגית'; SH='חוות דעת';     D=90;  TE='court-order';        LB='תקנה 258כג'}
+            # criminal (פלילי)
+            @{PT='criminal';       SN='כתב אישום';   SH='כתב אישום';             D=0;   TE='indictment-served';  LB='סעיף 144 לחסד"פ'}
+            @{PT='criminal';       SN='הודעת הנאשם';  SH='הודעת הנאשם';           D=30;  TE='indictment-served';  LB='סעיף 153'}
+            @{PT='criminal';       SN='גילוי חומר חקירה'; SH='חומר חקירה';       D=30;  TE='indictment-served';  LB='סעיף 74'}
+            @{PT='criminal';       SN='מועד הוכחות'; SH='ישיבת הוכחות';          D=90;  TE='plea-entered';       LB='סעיף 156'}
+        )
+        foreach ($r in $seed) {
+            Invoke-SqliteQuery -DataSource $DbPath -Query @"
+INSERT OR IGNORE INTO Rules_Engine (ProcedureType,StepName,StepNameHeb,DaysFromTrigger,TriggerEvent,IsRequired,LegalBasis)
+VALUES (@pt,@sn,@sh,@d,@te,1,@lb)
+"@ -SqlParameters @{pt=$r.PT; sn=$r.SN; sh=$r.SH; d=$r.D; te=$r.TE; lb=$r.LB}
+        }
+        Write-Host "  Rules_Engine seeded with $(($seed).Count) procedural rules." -ForegroundColor Green
+    }
+
+    Write-Host "  Database schema v3.0 ready." -ForegroundColor Green
+}
+
+# ── v3.0 Upsert helpers ────────────────────────────────────────────────────────
+
+function Upsert-ProceduralStep {
+    param([string]$DbPath, [hashtable]$Row)
+    $q = @"
+INSERT INTO Procedural_Steps
+    (CaseID,FileID,RuleID,StepName,TriggerEvent,TriggerDate,ExpectedDate,ActualDate,Status,Notes,AIGenerated)
+VALUES (@CaseID,@FileID,@RuleID,@StepName,@TriggerEvent,@TriggerDate,@ExpectedDate,@ActualDate,@Status,@Notes,@AIGenerated)
+ON CONFLICT DO NOTHING;
+"@
+    Invoke-SqliteQuery -DataSource $DbPath -Query $q -SqlParameters $Row
+}
+
+function Upsert-CaseBrief {
+    param([string]$DbPath, [hashtable]$Row)
+    $q = @"
+INSERT INTO Case_Brief
+    (CaseID,FileID,BriefType,ContradictionFound,RecommendedQuestion,SuggestedDocument,LegalBasis,ConfidenceScore,AIGenerated)
+VALUES (@CaseID,@FileID,@BriefType,@ContradictionFound,@RecommendedQuestion,@SuggestedDocument,@LegalBasis,@ConfidenceScore,@AIGenerated)
+ON CONFLICT DO NOTHING;
+"@
+    Invoke-SqliteQuery -DataSource $DbPath -Query $q -SqlParameters $Row
+}
+
+function Get-ProceduralSteps {
+    param([string]$DbPath, [int]$CaseID)
+    return Invoke-SqliteQuery -DataSource $DbPath -Query @"
+SELECT ps.*, re.LegalBasis, re.ProcedureType
+FROM Procedural_Steps ps
+LEFT JOIN Rules_Engine re ON re.RuleID = ps.RuleID
+WHERE ps.CaseID = @cid
+ORDER BY ps.ExpectedDate ASC;
+"@ -SqlParameters @{cid=$CaseID}
+}
+
+function Get-CaseBriefItems {
+    param([string]$DbPath, [int]$CaseID)
+    return Invoke-SqliteQuery -DataSource $DbPath -Query @"
+SELECT cb.*, f.OriginalName
+FROM Case_Brief cb
+LEFT JOIN Files f ON f.FileID = cb.FileID
+WHERE cb.CaseID = @cid
+ORDER BY cb.BriefType, cb.CreatedDate;
+"@ -SqlParameters @{cid=$CaseID}
 }

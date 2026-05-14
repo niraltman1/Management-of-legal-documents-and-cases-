@@ -26,6 +26,7 @@ $ScriptDir = $PSScriptRoot
 . "$ScriptDir\..\lib\Config.ps1"
 . "$ScriptDir\..\lib\Database.ps1"
 . "$ScriptDir\..\lib\LegalAI.ps1"
+. "$ScriptDir\..\lib\DocxBuilder.ps1"
 
 if ($DbPath)    { $script:DbPath    = $DbPath }
 if ($RootPath)  { $script:RootPath  = $RootPath }
@@ -166,12 +167,20 @@ $safeName = $DocumentType -replace '[\\/:*?"<>|]', '-'
 $filename = "$($caseRow.CaseNumber)_${safeName}_$stamp"
 
 if ($OutputFormat -eq "docx") {
-    # Save as Markdown with .docx extension note (requires pandoc/Word on target machine)
-    $mdPath = Join-Path $draftsDir "$filename.md"
-    [System.IO.File]::WriteAllText($mdPath, $draft, [System.Text.Encoding]::UTF8)
-    Write-Host ""
-    Write-Host "  טיוטה נשמרה (Markdown): $mdPath" -ForegroundColor Green
-    Write-Host "  להמרה ל-Word: pandoc `"$mdPath`" -o `"${filename}.docx`"" -ForegroundColor Gray
+    $docxPath = Join-Path $draftsDir "$filename.docx"
+    try {
+        New-DocxFile -Text $draft -OutputPath $docxPath -Title $DocumentType -Author "$($caseRow.LastName) $($caseRow.FirstName)"
+        Write-Host ""
+        Write-Host "  ✓ טיוטה נשמרה (Word): $docxPath" -ForegroundColor Green
+        Write-Host "  פתח ב-Word: Start-Process `"$docxPath`"" -ForegroundColor Cyan
+        $mdPath = $docxPath
+    } catch {
+        Write-Host "  ⚠ שגיאה ביצירת DOCX: $_" -ForegroundColor Red
+        Write-Host "  שומר כ-Markdown במקום..." -ForegroundColor Yellow
+        $mdPath = Join-Path $draftsDir "$filename.md"
+        [System.IO.File]::WriteAllText($mdPath, $draft, [System.Text.Encoding]::UTF8)
+        Write-Host "  ✓ טיוטה נשמרה: $mdPath" -ForegroundColor Green
+    }
 } else {
     $mdPath = Join-Path $draftsDir "$filename.md"
     [System.IO.File]::WriteAllText($mdPath, $draft, [System.Text.Encoding]::UTF8)

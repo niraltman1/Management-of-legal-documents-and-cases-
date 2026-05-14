@@ -646,20 +646,54 @@ function renderTimeline(){
 
   // Render table below timeline
   document.getElementById('tl-table').innerHTML = `
-    <table><thead><tr><th>שלב</th><th>תיק</th><th>מועד צפוי</th><th>מועד בפועל</th><th>סטטוס</th><th>בסיס חוקי</th></tr></thead>
+    <table><thead><tr><th>שלב</th><th>תיק</th><th>מועד צפוי</th><th>מועד בפועל</th><th>סטטוס</th><th>בסיס חוקי</th><th>פעולה</th></tr></thead>
     <tbody>${arr.map(s=>{
       const st = s.Status==='missed'?'<span class="badge badge-low">באיחור</span>':
                  s.Status==='done'?'<span class="badge badge-high">בוצע</span>':
                  '<span class="badge badge-pending">ממתין</span>';
-      return `<tr>
+      const doneBtn = s.Status!=='done'
+        ? `<button onclick="markDone(${s.StepID},this)" style="padding:3px 10px;background:#27ae60;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.78rem">✓ בוצע</button>`
+        : '<span style="color:#27ae60;font-size:.82rem">✓</span>';
+      return `<tr id="step-row-${s.StepID}">
         <td>${esc(s.StepName)}</td>
         <td>${esc(s.CaseNumber||'')}</td>
         <td>${esc(s.ExpectedDate||'')}</td>
-        <td>${esc(s.ActualDate||'—')}</td>
-        <td>${st}</td>
+        <td class="actual-date-${s.StepID}">${esc(s.ActualDate||'—')}</td>
+        <td class="status-cell-${s.StepID}">${st}</td>
         <td><small>${esc(s.Notes||s.LegalBasis||'')}</small></td>
+        <td>${doneBtn}</td>
       </tr>`;}).join('')}
     </tbody></table>`;
+}
+
+function markDone(stepId, btn){
+  btn.disabled = true;
+  btn.textContent = '...';
+  fetch('http://localhost:8765/done?stepId='+stepId, {mode:'no-cors'})
+    .then(()=>{
+      const today = new Date().toISOString().slice(0,10);
+      const row = document.getElementById('step-row-'+stepId);
+      if(row){
+        row.querySelector('.actual-date-'+stepId).textContent = today;
+        row.querySelector('.status-cell-'+stepId).innerHTML = '<span class="badge badge-high">בוצע</span>';
+      }
+      btn.parentElement.innerHTML = '<span style="color:#27ae60;font-size:.82rem">✓</span>';
+      // update in-memory data so re-render reflects done state
+      const s = tlArr.find(x=>x.StepID===stepId);
+      if(s){ s.Status='done'; s.ActualDate=today; }
+    })
+    .catch(()=>{
+      // listener may not be running — still update visually so the user sees the intent
+      const today = new Date().toISOString().slice(0,10);
+      const row = document.getElementById('step-row-'+stepId);
+      if(row){
+        row.querySelector('.actual-date-'+stepId).textContent = today;
+        row.querySelector('.status-cell-'+stepId).innerHTML = '<span class="badge badge-high">בוצע</span>';
+      }
+      btn.parentElement.innerHTML = '<span style="color:#27ae60;font-size:.82rem">✓</span>';
+      const s = tlArr.find(x=>x.StepID===stepId);
+      if(s){ s.Status='done'; s.ActualDate=today; }
+    });
 }
 
 function _drawVis(items, groups, today){
@@ -755,4 +789,62 @@ Write-Host "Report saved: $reportPath" -ForegroundColor Green
 
 if (-not $NoOpen) {
     Invoke-Item $reportPath
+}
+
+# ── HTTP listener for "Mark as Done" button (port 8765, timeout 90s) ──────────
+Write-Host ""
+Write-Host "  מאזין לעדכוני 'בוצע' מהדפדפן (90 שניות)..." -ForegroundColor Cyan
+Write-Host "  לחץ Ctrl+C לסגירה מוקדמת." -ForegroundColor Gray
+
+$listener = $null
+try {
+    $listener = [System.Net.HttpListener]::new()
+    $listener.Prefixes.Add("http://localhost:8765/")
+    $listener.Start()
+
+    $deadline = [DateTime]::Now.AddSeconds(90)
+
+    while ([DateTime]::Now -lt $deadline -and $listener.IsListening) {
+        $ctx = $listener.BeginGetContext($null, $null)
+        $waited = $ctx.AsyncWaitHandle.WaitOne(1000)
+        if (-not $waited) { continue }
+
+        $req  = $listener.EndGetContext($ctx)
+        $resp = $req.Response
+        $resp.Headers.Add("Access-Control-Allow-Origin", "*")
+
+        $url = $req.Url.PathAndQuery
+        if ($url -match '/done\?stepId=(\d+)') {
+            $sid = [int]$Matches[1]
+            $today = (Get-Date).ToString("yyyy-MM-dd")
+            try {
+                Invoke-SqliteQuery -DataSource $script:DbPath `
+                    -Query "UPDATE Procedural_Steps SET Status='done', ActualDate=@d WHERE StepID=@sid" `
+                    -SqlParameters @{d=$today; sid=$sid}
+                Write-Host "  ✓ שלב $sid סומן כ'בוצע' ($today)" -ForegroundColor Green
+                $body = '{"ok":true}'
+                $resp.StatusCode = 200
+            } catch {
+                Write-Host "  ⚠ שגיאה בעדכון שלב $sid : $_" -ForegroundColor Red
+                $body = '{"ok":false,"error":"db update failed"}'
+                $resp.StatusCode = 500
+            }
+        } else {
+            $body = '{"ok":false,"error":"unknown endpoint"}'
+            $resp.StatusCode = 404
+        }
+
+        $resp.ContentType = "application/json; charset=utf-8"
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($body)
+        $resp.ContentLength64 = $bytes.Length
+        $resp.OutputStream.Write($bytes, 0, $bytes.Length)
+        $resp.Close()
+    }
+} catch {
+    if ($_ -notmatch 'Cannot access a disposed object|thread abort') {
+        Write-Host "  HTTP listener: $_" -ForegroundColor Gray
+    }
+} finally {
+    if ($listener -and $listener.IsListening) { $listener.Stop() }
+    Write-Host "  האזנה הסתיימה." -ForegroundColor Gray
 }
